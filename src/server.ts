@@ -1,4 +1,10 @@
-import { routeAgentRequest, type Schedule } from "agents";
+import {
+  Agent,
+  routeAgentRequest,
+  type AgentNamespace,
+  type Schedule,
+  getAgentByName,
+} from "agents";
 
 import { unstable_getSchedulePrompt } from "agents/schedule";
 
@@ -14,6 +20,11 @@ import { openai } from "@ai-sdk/openai";
 import { processToolCalls } from "./utils";
 import { tools, executions } from "./tools";
 // import { env } from "cloudflare:workers";
+
+interface Env {
+  Chat: AgentNamespace<Chat>;
+  WorkerAgent: AgentNamespace<WorkerAgent>;
+}
 
 const model = openai("gpt-4o-2024-11-20");
 // Cloudflare AI Gateway
@@ -97,6 +108,43 @@ If the user asks to schedule a task, use the schedule tool to schedule the task.
         createdAt: new Date(),
       },
     ]);
+  }
+
+  async createWorkerAgent() {
+    const workerId = `worker-${generateId()}`;
+    const workerAgent = await getAgentByName<Env, WorkerAgent>(
+      this.env.WorkerAgent,
+      workerId
+    );
+
+    // Call the initialize method with this chat's ID
+    const result = await workerAgent.initialize(this.ctx.id.toString());
+
+    return {
+      workerId,
+      workerAgent,
+      result,
+    };
+  }
+
+  async onRequest(request: Request) {
+    const url = new URL(request.url);
+    console.log("onRequest", url.pathname, request.method);
+    if (url.pathname.endsWith("/test-worker") && request.method === "POST") {
+      await this.createWorkerAgent();
+      return new Response(JSON.stringify({ message: "Worker agent created" }), {
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    return super.onRequest(request);
+  }
+}
+
+export class WorkerAgent extends Agent<Env> {
+  async initialize(chatId: string) {
+    // Store the chat ID that created this worker
+    await this.setState({ chatId });
+    return { status: "initialized", chatId };
   }
 }
 
