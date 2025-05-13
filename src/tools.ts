@@ -5,9 +5,10 @@
 import { tool } from "ai";
 import { z } from "zod";
 
-import type { Chat } from "./server";
-import { getCurrentAgent } from "agents";
+import type { Chat, Env } from "./server";
+import { getCurrentAgent, getAgentByName, type AgentNamespace } from "agents";
 import { unstable_scheduleSchema } from "agents/schedule";
+import type { WorkerAgent } from "./server";
 
 /**
  * Weather information tool that requires human confirmation
@@ -115,19 +116,57 @@ const cancelScheduledTask = tool({
  */
 const createWorkerAgent = tool({
   description: "Create a new worker agent that can perform tasks",
-  parameters: z.object({}),
-  execute: async () => {
+  parameters: z.object({
+    name: z.string().describe("The name of the worker agent"),
+    purpose: z.string().describe("The purpose or role of the worker agent"),
+  }),
+  execute: async ({ name, purpose }) => {
     const { agent } = getCurrentAgent<Chat>();
     try {
-      const { workerId, result } = await agent!.createWorkerAgent();
+      const { workerId, result } = await agent!.createWorkerAgent(
+        name,
+        purpose
+      );
       return {
         workerId,
+        name: result.name,
+        purpose: result.purpose,
         status: result.status,
-        message: `Successfully created worker agent with ID: ${workerId}`,
+        message: `Successfully created worker agent "${name}" with ID: ${workerId}`,
       };
     } catch (error) {
       console.error("Error creating worker agent", error);
       return `Error creating worker agent: ${error}`;
+    }
+  },
+});
+
+/**
+ * Tool to get information about a specific worker agent
+ * This executes automatically without requiring human confirmation
+ */
+const getWorkerInfo = tool({
+  description: "Get information about a specific worker agent using its ID",
+  parameters: z.object({
+    workerId: z
+      .string()
+      .describe("The ID of the worker agent to get information about"),
+  }),
+  execute: async ({ workerId }) => {
+    const { agent } = getCurrentAgent<Chat>();
+    try {
+      const workerAgent = await getAgentByName<Env, WorkerAgent>(
+        agent!.getEnvBinding("WorkerAgent"),
+        workerId
+      );
+      const info = await workerAgent.getWorkerInfo();
+      return {
+        ...info,
+        message: `Successfully retrieved information for worker agent ${workerId}`,
+      };
+    } catch (error) {
+      console.error("Error getting worker agent info", error);
+      return `Error getting worker agent info: ${error}`;
     }
   },
 });
@@ -143,6 +182,7 @@ export const tools = {
   getScheduledTasks,
   cancelScheduledTask,
   createWorkerAgent,
+  getWorkerInfo,
 };
 
 /**

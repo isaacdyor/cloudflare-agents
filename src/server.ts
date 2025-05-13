@@ -21,7 +21,7 @@ import { processToolCalls } from "./utils";
 import { tools, executions } from "./tools";
 // import { env } from "cloudflare:workers";
 
-interface Env {
+export interface Env {
   Chat: AgentNamespace<Chat>;
   WorkerAgent: AgentNamespace<WorkerAgent>;
 }
@@ -110,15 +110,19 @@ If the user asks to schedule a task, use the schedule tool to schedule the task.
     ]);
   }
 
-  async createWorkerAgent() {
+  async createWorkerAgent(name: string, purpose: string) {
     const workerId = `worker-${generateId()}`;
     const workerAgent = await getAgentByName<Env, WorkerAgent>(
       this.env.WorkerAgent,
       workerId
     );
 
-    // Call the initialize method with this chat's ID
-    const result = await workerAgent.initialize(this.ctx.id.toString());
+    // Call the initialize method with this chat's ID and the worker's name and purpose
+    const result = await workerAgent.initialize(
+      this.ctx.id.toString(),
+      name,
+      purpose
+    );
 
     return {
       workerId,
@@ -127,47 +131,37 @@ If the user asks to schedule a task, use the schedule tool to schedule the task.
     };
   }
 
-  async onRequest(request: Request) {
-    const url = new URL(request.url);
-    console.log("onRequest", url.pathname, request.method);
-    if (url.pathname.endsWith("/test-worker") && request.method === "POST") {
-      const { workerId, result } = await this.createWorkerAgent();
-      return new Response(
-        JSON.stringify({
-          message: `just create worker with id: ${workerId}`,
-          result,
-        }),
-        {
-          headers: { "Content-Type": "application/json" },
-        }
-      );
-    }
-    return super.onRequest(request);
+  getEnvBinding<T>(key: string): T {
+    return this.env[key as keyof Env] as T;
   }
 }
 
 interface WorkerAgentState {
   chatId: string;
+  name: string;
+  purpose: string;
 }
 export class WorkerAgent extends Agent<Env, WorkerAgentState> {
-  async initialize(chatId: string) {
-    // Store the chat ID that created this worker
-    await this.setState({ chatId });
-    return { status: "initialized", chatId, workerId: this.ctx.id.toString() };
+  async initialize(chatId: string, name: string, purpose: string) {
+    // Store the chat ID that created this worker along with its name and purpose
+    await this.setState({ chatId, name, purpose });
+    return {
+      status: "initialized",
+      chatId,
+      workerId: this.ctx.id.toString(),
+      name,
+      purpose,
+    };
   }
 
-  async onRequest(request: Request) {
-    const url = new URL(request.url);
-    console.log("Agent who created me", this.state.chatId);
-    if (url.pathname.endsWith("/owner") && request.method === "GET") {
-      return new Response(
-        JSON.stringify({ message: `I was created by ${this.state.chatId}` }),
-        {
-          headers: { "Content-Type": "application/json" },
-        }
-      );
-    }
-    return super.onRequest(request);
+  async getWorkerInfo() {
+    return {
+      status: "initialized",
+      chatId: this.state.chatId,
+      workerId: this.ctx.id.toString(),
+      name: this.state.name,
+      purpose: this.state.purpose,
+    };
   }
 }
 
