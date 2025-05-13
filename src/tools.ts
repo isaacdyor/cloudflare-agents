@@ -8,6 +8,8 @@ import { z } from "zod";
 import type { Chat } from "./server";
 import { getCurrentAgent } from "agents";
 import { unstable_scheduleSchema } from "agents/schedule";
+import type { AgentNamespace } from "agents";
+import { WorkerAgent } from "./workerAgent";
 
 /**
  * Weather information tool that requires human confirmation
@@ -109,6 +111,52 @@ const cancelScheduledTask = tool({
   },
 });
 
+const createSubAgent = tool({
+  description:
+    "Create a new sub worker agent (Durable Object) to perform tasks in isolation.",
+  parameters: z.object({
+    name: z
+      .string()
+      .min(1)
+      .describe("Unique name/identifier for the sub-agent"),
+    purpose: z
+      .string()
+      .min(1)
+      .describe("Short description of what the sub-agent is for"),
+  }),
+  execute: async ({ name, purpose }) => {
+    const { agent } = getCurrentAgent<Chat>();
+
+    if (!agent) {
+      throw new Error("Could not resolve current agent context");
+    }
+
+    // Access the WorkerAgent Durable Object namespace from the environment
+    const env = (agent as unknown as { env: Env }).env as unknown as {
+      WorkerAgent: AgentNamespace<WorkerAgent>;
+    };
+
+    if (!env?.WorkerAgent) {
+      throw new Error("WorkerAgent namespace is not bound in the environment");
+    }
+
+    // Create a new unique Durable Object id and stub
+    const id = env.WorkerAgent.newUniqueId();
+    const stub = env.WorkerAgent.get(id);
+
+    // "Boot" the sub-agent by sending an initialization request
+    await stub.fetch("/init", {
+      method: "POST",
+      body: JSON.stringify({ name, purpose }),
+      headers: {
+        "Content-Type": "application/json",
+      },
+    });
+
+    return `Sub-agent \"${name}\" created with id ${id.toString()}`;
+  },
+});
+
 /**
  * Export all available tools
  * These will be provided to the AI model to describe available capabilities
@@ -119,6 +167,7 @@ export const tools = {
   scheduleTask,
   getScheduledTasks,
   cancelScheduledTask,
+  createSubAgent,
 };
 
 /**
