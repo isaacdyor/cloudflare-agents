@@ -119,11 +119,12 @@ If the user asks to schedule a task, use the schedule tool to schedule the task.
       workerId
     );
 
-    // Call the initialize method with this chat's ID and the worker's name and purpose
+    // Call the initialize method with this chat's ID, the worker's name, purpose, and the human-readable workerId
     const result = await workerAgent.initialize(
       this.ctx.id.toString(),
       name,
-      purpose
+      purpose,
+      workerId
     );
 
     return {
@@ -142,15 +143,21 @@ interface WorkerAgentState {
   chatId: string;
   name: string;
   purpose: string;
+  workerId: string; // Add workerId to the state interface
 }
 export class WorkerAgent extends Agent<Env, WorkerAgentState> {
-  async initialize(chatId: string, name: string, purpose: string) {
-    // Store the chat ID that created this worker along with its name and purpose
-    await this.setState({ chatId, name, purpose });
+  async initialize(
+    chatId: string,
+    name: string,
+    purpose: string,
+    workerId: string
+  ) {
+    // Store the chat ID that created this worker along with its name, purpose, and the human-readable workerId
+    await this.setState({ chatId, name, purpose, workerId });
     return {
       status: "initialized",
       chatId,
-      workerId: this.ctx.id.toString(),
+      workerId, // Use the human-readable workerId instead of ctx.id
       name,
       purpose,
     };
@@ -161,7 +168,7 @@ export class WorkerAgent extends Agent<Env, WorkerAgentState> {
     return {
       status: "initialized",
       chatId: this.state.chatId,
-      workerId: this.ctx.id.toString(),
+      workerId: this.state.workerId, // Use the stored human-readable workerId
       name: this.state.name,
       purpose: this.state.purpose,
     };

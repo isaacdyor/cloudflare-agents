@@ -14,10 +14,7 @@ const router = createBrowserRouter([
     path: "/",
     element: <App />,
   },
-  {
-    path: "/agent",
-    element: <p>Agent</p>,
-  },
+
   {
     path: "/agent/:id",
     element: <AgentInfoPage />,
