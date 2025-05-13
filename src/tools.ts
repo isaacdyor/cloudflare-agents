@@ -110,6 +110,29 @@ const cancelScheduledTask = tool({
 });
 
 /**
+ * Tool to create a new worker agent
+ * This executes automatically without requiring human confirmation
+ */
+const createWorkerAgent = tool({
+  description: "Create a new worker agent that can perform tasks",
+  parameters: z.object({}),
+  execute: async () => {
+    const { agent } = getCurrentAgent<Chat>();
+    try {
+      const { workerId, result } = await agent!.createWorkerAgent();
+      return {
+        workerId,
+        status: result.status,
+        message: `Successfully created worker agent with ID: ${workerId}`,
+      };
+    } catch (error) {
+      console.error("Error creating worker agent", error);
+      return `Error creating worker agent: ${error}`;
+    }
+  },
+});
+
+/**
  * Export all available tools
  * These will be provided to the AI model to describe available capabilities
  */
@@ -119,6 +142,7 @@ export const tools = {
   scheduleTask,
   getScheduledTasks,
   cancelScheduledTask,
+  createWorkerAgent,
 };
 
 /**

@@ -131,20 +131,43 @@ If the user asks to schedule a task, use the schedule tool to schedule the task.
     const url = new URL(request.url);
     console.log("onRequest", url.pathname, request.method);
     if (url.pathname.endsWith("/test-worker") && request.method === "POST") {
-      await this.createWorkerAgent();
-      return new Response(JSON.stringify({ message: "Worker agent created" }), {
-        headers: { "Content-Type": "application/json" },
-      });
+      const { workerId, result } = await this.createWorkerAgent();
+      return new Response(
+        JSON.stringify({
+          message: `just create worker with id: ${workerId}`,
+          result,
+        }),
+        {
+          headers: { "Content-Type": "application/json" },
+        }
+      );
     }
     return super.onRequest(request);
   }
 }
 
-export class WorkerAgent extends Agent<Env> {
+interface WorkerAgentState {
+  chatId: string;
+}
+export class WorkerAgent extends Agent<Env, WorkerAgentState> {
   async initialize(chatId: string) {
     // Store the chat ID that created this worker
     await this.setState({ chatId });
-    return { status: "initialized", chatId };
+    return { status: "initialized", chatId, workerId: this.ctx.id.toString() };
+  }
+
+  async onRequest(request: Request) {
+    const url = new URL(request.url);
+    console.log("Agent who created me", this.state.chatId);
+    if (url.pathname.endsWith("/owner") && request.method === "GET") {
+      return new Response(
+        JSON.stringify({ message: `I was created by ${this.state.chatId}` }),
+        {
+          headers: { "Content-Type": "application/json" },
+        }
+      );
+    }
+    return super.onRequest(request);
   }
 }
 
