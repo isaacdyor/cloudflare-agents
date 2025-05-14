@@ -20,6 +20,8 @@ import {
 import { openai } from "@ai-sdk/openai";
 import { processToolCalls } from "./utils";
 import { tools, executions } from "./tools";
+import type { AgentMetadata, WorkerAgentState, Task } from "./types";
+import { TaskStatus } from "./types";
 // import { env } from "cloudflare:workers";
 
 export interface Env {
@@ -139,12 +141,6 @@ If the user asks to schedule a task, use the schedule tool to schedule the task.
   }
 }
 
-interface WorkerAgentState {
-  chatId: string;
-  name: string;
-  purpose: string;
-  workerId: string; // Add workerId to the state interface
-}
 export class WorkerAgent extends Agent<Env, WorkerAgentState> {
   async initialize(
     chatId: string,
@@ -153,24 +149,98 @@ export class WorkerAgent extends Agent<Env, WorkerAgentState> {
     workerId: string
   ) {
     // Store the chat ID that created this worker along with its name, purpose, and the human-readable workerId
-    await this.setState({ chatId, name, purpose, workerId });
+    await this.setState({
+      metadata: { chatId, name, workerId },
+      purpose,
+      isRunning: false,
+      taskQueue: [],
+      completedTasks: [],
+      lastProcessedAt: new Date(),
+    });
     return {
       status: "initialized",
-      chatId,
-      workerId, // Use the human-readable workerId instead of ctx.id
-      name,
+      metadata: { chatId, name, workerId },
       purpose,
     };
   }
 
   @unstable_callable()
+  async start() {
+    if (this.state.isRunning) return;
+
+    await this.setState({
+      ...this.state,
+      isRunning: true,
+    });
+    await this.processNextTask();
+    return { status: "started" };
+  }
+
+  @unstable_callable()
+  async stop() {
+    if (!this.state.isRunning) return;
+
+    await this.setState({
+      ...this.state,
+      isRunning: false,
+    });
+    return { status: "stopped" };
+  }
+
+  @unstable_callable()
+  private async processNextTask() {
+    if (!this.state.isRunning) return;
+
+    const task = this.state.taskQueue[0];
+    if (!task) {
+      // No tasks in queue, schedule check in 5 seconds
+      await this.scheduleNextExecution(5);
+      return;
+    }
+
+    // Process the task
+    try {
+      task.status = TaskStatus.RUNNING;
+      task.startedAt = new Date();
+
+      // TODO: Implement actual task processing based on type
+      // For now, just mark as completed
+      task.status = TaskStatus.COMPLETED;
+      task.completedAt = new Date();
+
+      // Move task to completed and remove from queue
+      await this.setState({
+        ...this.state,
+        taskQueue: this.state.taskQueue.slice(1),
+        completedTasks: [...this.state.completedTasks, task],
+        lastProcessedAt: new Date(),
+      });
+
+      // Schedule next execution in 1 second
+      await this.scheduleNextExecution(1);
+    } catch (error: any) {
+      task.status = TaskStatus.FAILED;
+      task.error = error.message;
+      // TODO: Implement retry logic
+    }
+  }
+
+  private async scheduleNextExecution(seconds: number) {
+    await this.schedule(
+      new Date(Date.now() + seconds * 1000),
+      "processNextTask" as keyof this
+    );
+  }
+
+  @unstable_callable()
   async getWorkerInfo() {
     return {
-      status: "initialized",
-      chatId: this.state.chatId,
-      workerId: this.state.workerId, // Use the stored human-readable workerId
-      name: this.state.name,
+      status: this.state.isRunning ? "running" : "stopped",
+      metadata: this.state.metadata,
       purpose: this.state.purpose,
+      queueLength: this.state.taskQueue.length,
+      completedTasks: this.state.completedTasks.length,
+      lastProcessedAt: this.state.lastProcessedAt,
     };
   }
 }
