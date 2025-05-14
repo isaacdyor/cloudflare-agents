@@ -20,6 +20,8 @@ export default function AgentInfoPage() {
   const [info, setInfo] = useState<WorkerInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [starting, setStarting] = useState(false);
+  const [stopping, setStopping] = useState(false);
 
   const agent = useAgent({
     agent: "workerAgent",
@@ -44,6 +46,36 @@ export default function AgentInfoPage() {
     fetchInfo();
   }, [id, agent]);
 
+  const handleStart = async () => {
+    if (!id) return;
+    setStarting(true);
+    try {
+      await agent.call("start");
+      // Refresh the info after starting
+      const result = await agent.call("getWorkerInfo");
+      setInfo(result as WorkerInfo);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setStarting(false);
+    }
+  };
+
+  const handleStop = async () => {
+    if (!id) return;
+    setStopping(true);
+    try {
+      await agent.call("stop");
+      // Refresh the info after stopping
+      const result = await agent.call("getWorkerInfo");
+      setInfo(result as WorkerInfo);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setStopping(false);
+    }
+  };
+
   if (!id) return <p className="p-4">No agent ID provided.</p>;
   if (loading) return <p className="p-4">Loading agent data…</p>;
   if (error) return <p className="p-4 text-red-600">Error: {error}</p>;
@@ -56,6 +88,22 @@ export default function AgentInfoPage() {
           <pre className="whitespace-pre-wrap break-words text-sm">
             {JSON.stringify(info, null, 2)}
           </pre>
+          <div className="mt-4 flex justify-end gap-2">
+            <Button
+              onClick={handleStop}
+              disabled={stopping || info?.status === "stopped"}
+              className="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded disabled:opacity-50"
+            >
+              {stopping ? "Stopping..." : "Stop Agent"}
+            </Button>
+            <Button
+              onClick={handleStart}
+              disabled={starting || info?.status === "running"}
+              className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded disabled:opacity-50"
+            >
+              {starting ? "Starting..." : "Start Agent"}
+            </Button>
+          </div>
         </Card>
         <div className="mt-6 flex justify-center">
           <Link to="/">Back to Chat</Link>
