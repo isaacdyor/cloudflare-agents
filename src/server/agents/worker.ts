@@ -1,46 +1,45 @@
 import { Agent, unstable_callable, type Schedule } from "agents";
 
-import type { Task, WorkerAgentState } from "@/server/agents/agents.types";
-import { generateId, generateText } from "ai";
+import {
+  ThinkingStepOutputSchema,
+  type Task,
+  type WorkerAgentState,
+  type Artifact,
+} from "@/server/agents/agents.types";
+import { generateId, generateObject, generateText } from "ai";
 import { model } from "..";
 import type { Env } from "../index";
 export class WorkerAgent extends Agent<Env, WorkerAgentState> {
   async initialize(
-    chatId: string,
-    name: string,
-    purpose: string,
-    workerId: string
+    workerId: string,
+    rawUserInput: string,
+    objective: string,
+    chatId: string
   ) {
     // Create initial think task to analyze purpose and plan
     const initialTask: Task = {
       id: generateId(),
       type: "think",
       status: "pending",
-      priority: 1,
       description: "Initial analysis of agent purpose and planning",
-      parameters: { purpose },
-      createdAt: new Date(),
-      retryCount: 0,
-      maxRetries: 3,
+      parameters: { rawUserInput, objective },
+      artifactIds: [],
     };
 
     // Store the chat ID that created this worker along with its name, purpose, and the human-readable workerId
     await this.setState({
-      metadata: { chatId, name, workerId },
-      purpose,
+      workerId,
+      rawUserInput,
+      objective,
+      chatId,
       isRunning: false,
       taskQueue: [initialTask],
       completedTasks: [],
-      lastProcessedAt: new Date(),
+      artifacts: {},
     });
-
-    // Start the agent to begin processing
-    // await this.start();
 
     return {
       status: "initialized",
-      metadata: { chatId, name, workerId },
-      purpose,
     };
   }
 
@@ -72,6 +71,30 @@ export class WorkerAgent extends Agent<Env, WorkerAgentState> {
   }
 
   @unstable_callable()
+  async reset() {
+    // Create initial think task to analyze purpose and plan
+    const initialTask: Task = {
+      id: generateId(),
+      type: "think",
+      status: "pending",
+      description: "Initial analysis of agent purpose and planning",
+      parameters: {
+        rawUserInput: this.state.rawUserInput,
+        objective: this.state.objective,
+      },
+      artifactIds: [],
+    };
+
+    await this.setState({
+      ...this.state,
+      isRunning: false,
+      taskQueue: [initialTask],
+      completedTasks: [],
+      currentTask: undefined,
+    });
+  }
+
+  @unstable_callable()
   async processNextTask() {
     console.log("Processing next task");
     if (!this.state.isRunning) return;
@@ -89,46 +112,84 @@ export class WorkerAgent extends Agent<Env, WorkerAgentState> {
       return;
     }
 
+    const artifacts = task.artifactIds.map(
+      (artifactId) => this.state.artifacts[artifactId]
+    );
+
     // Process the task based on its type
     try {
       switch (task.type) {
         case "think": {
           console.log("Processing THINK task");
           task.status = "running";
-          task.startedAt = new Date();
 
-          const prompt = `Your purpose is: "${this.state.purpose}". Based on your purpose, propose the single next best action you should take to make progress. Respond with only the action as an imperative sentence without any additional text.`;
+          const prompt = `You are an AI agent working towards the following objective: "${this.state.objective}"
+
+Initial user input: "${this.state.rawUserInput}"
+
+Progress so far:
+${JSON.stringify(this.state.completedTasks)}
+
+Please analyze the current situation and determine the next best step:
+
+1. Review what has been accomplished so far
+2. Assess what remains to be done to achieve the objective
+3. Consider any potential obstacles or challenges
+4. Determine if the objective has been fully achieved
+
+Based on this analysis, propose the single next best action to take. If the objective has been fully achieved, set the "complete" field to true.
+
+Respond with only the action as an imperative sentence without any additional text.`;
           console.log("Prompt:", prompt);
           // Ask the AI to propose the next action towards the agent's purpose
-          const { text: aiPlan } = await generateText({
+          const { object } = await generateObject({
             model,
             prompt,
+            schema: ThinkingStepOutputSchema,
           });
 
-          console.log("AI plan:", aiPlan);
+          console.log("Response:", object);
 
-          const actionTask: Task = {
-            id: generateId(),
-            type: "action",
-            status: "pending",
-            priority: 1,
-            description: aiPlan,
-            parameters: {},
-            createdAt: new Date(),
-            retryCount: 0,
-            maxRetries: 3,
-          };
+          if (object.completionDecision.shouldComplete) {
+            task.status = "completed";
+            await this.setState({
+              ...this.state,
+              isRunning: false,
+            });
+            return;
+          }
+
+          let nextTask: Task;
+
+          if (object.nextStep.type === "ACTION") {
+            nextTask = {
+              id: generateId(),
+              type: "action",
+              status: "pending",
+              description: object.nextStep.actionDetails?.action ?? "",
+              parameters: {},
+              artifactIds: [],
+            };
+          } else {
+            nextTask = {
+              id: generateId(),
+              type: "think",
+              status: "pending",
+              description: object.nextStep.thinkingDetails?.purpose ?? "",
+              parameters: {},
+              artifactIds: [],
+            };
+          }
 
           // Mark THINK task completed
           task.status = "completed";
-          task.completedAt = new Date();
+          task.result = JSON.stringify(object);
 
           // Update state: remove THINK task, push ACTION task
           await this.setState({
             ...this.state,
-            taskQueue: [...this.state.taskQueue.slice(1), actionTask],
+            taskQueue: [...this.state.taskQueue.slice(1), nextTask],
             completedTasks: [...this.state.completedTasks, task],
-            lastProcessedAt: new Date(),
           });
 
           // Schedule next execution immediately
@@ -138,7 +199,6 @@ export class WorkerAgent extends Agent<Env, WorkerAgentState> {
         case "action": {
           console.log("Processing ACTION task");
           task.status = "running";
-          task.startedAt = new Date();
 
           // Use the AI to "execute" the action and get a result summary
           const { text: actionResult } = await generateText({
@@ -148,7 +208,6 @@ export class WorkerAgent extends Agent<Env, WorkerAgentState> {
 
           task.result = actionResult;
           task.status = "completed";
-          task.completedAt = new Date();
 
           // Prepare updated queue and completed lists
           const updatedCompleted = [...this.state.completedTasks, task];
@@ -159,19 +218,15 @@ export class WorkerAgent extends Agent<Env, WorkerAgentState> {
             id: generateId(),
             type: "think",
             status: "pending",
-            priority: 1,
             description: "Reflect on progress and plan next action",
             parameters: {},
-            createdAt: new Date(),
-            retryCount: 0,
-            maxRetries: 3,
+            artifactIds: [],
           };
 
           await this.setState({
             ...this.state,
             taskQueue: [...updatedQueueAfterRemoval, nextThinkTask],
             completedTasks: updatedCompleted,
-            lastProcessedAt: new Date(),
           });
 
           // Schedule next execution for remaining tasks
@@ -186,12 +241,13 @@ export class WorkerAgent extends Agent<Env, WorkerAgentState> {
             ...this.state,
             taskQueue: this.state.taskQueue.slice(1),
             completedTasks: [...this.state.completedTasks, task],
-            lastProcessedAt: new Date(),
           });
           // Continue processing
           await this.scheduleNextExecution(1);
         }
       }
+
+      this.stop();
     } catch (error: any) {
       task.status = "failed";
       task.error = error.message;
@@ -199,7 +255,6 @@ export class WorkerAgent extends Agent<Env, WorkerAgentState> {
         ...this.state,
         taskQueue: this.state.taskQueue.slice(1),
         completedTasks: [...this.state.completedTasks, task],
-        lastProcessedAt: new Date(),
       });
       // Retry logic can be added here
       await this.scheduleNextExecution(5);
@@ -219,10 +274,11 @@ export class WorkerAgent extends Agent<Env, WorkerAgentState> {
     const scheduledEvents = await this.listScheduledEvents();
 
     return {
-      metadata: this.state.metadata,
-      purpose: this.state.purpose,
+      workerId: this.state.workerId,
+      rawUserInput: this.state.rawUserInput,
+      objective: this.state.objective,
+      chatId: this.state.chatId,
       queueLength: this.state.taskQueue.length,
-      lastProcessedAt: this.state.lastProcessedAt,
       completedTasks: this.state.completedTasks,
       taskQueue: this.state.taskQueue,
       isRunning: this.state.isRunning,
@@ -242,5 +298,76 @@ export class WorkerAgent extends Agent<Env, WorkerAgentState> {
       console.error("Error getting scheduled events:", error);
       return [];
     }
+  }
+
+  @unstable_callable()
+  async createArtifact(artifact: Omit<Artifact, "id">) {
+    const newArtifact: Artifact = {
+      ...artifact,
+      id: generateId(),
+    };
+
+    await this.setState({
+      ...this.state,
+      artifacts: {
+        ...this.state.artifacts,
+        [newArtifact.id]: newArtifact,
+      },
+    });
+
+    return newArtifact;
+  }
+
+  @unstable_callable()
+  async getArtifact(artifactId: string) {
+    const artifact = this.state.artifacts[artifactId];
+    if (!artifact) {
+      throw new Error(`Artifact with ID ${artifactId} not found`);
+    }
+    return artifact;
+  }
+
+  @unstable_callable()
+  async updateArtifact(
+    artifactId: string,
+    updates: Partial<Omit<Artifact, "id">>
+  ) {
+    const existingArtifact = this.state.artifacts[artifactId];
+    if (!existingArtifact) {
+      throw new Error(`Artifact with ID ${artifactId} not found`);
+    }
+
+    const updatedArtifact: Artifact = {
+      ...existingArtifact,
+      ...updates,
+    };
+
+    await this.setState({
+      ...this.state,
+      artifacts: {
+        ...this.state.artifacts,
+        [artifactId]: updatedArtifact,
+      },
+    });
+
+    return updatedArtifact;
+  }
+
+  @unstable_callable()
+  async deleteArtifact(artifactId: string) {
+    const existingArtifact = this.state.artifacts[artifactId];
+    if (!existingArtifact) {
+      throw new Error(`Artifact with ID ${artifactId} not found`);
+    }
+
+    const { [artifactId]: deletedArtifact, ...remainingArtifacts } =
+      this.state.artifacts;
+
+    await this.setState({
+      ...this.state,
+      artifacts: remainingArtifacts,
+    });
+
+    return deletedArtifact;
   }
 }

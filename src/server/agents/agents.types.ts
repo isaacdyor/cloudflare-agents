@@ -1,19 +1,14 @@
+import { z } from "zod";
+
 export interface Task {
   id: string; // Unique identifier for the task
   type: TaskType; // What kind of task it is
   status: TaskStatus; // Current state of the task
-  priority: number; // For queue ordering
   description: string; // Human-readable description
-  parameters: Record<string, any>; // Task-specific parameters
-  result?: any; // Output of the task
+  parameters: Record<string, unknown>; // Task-specific parameters
+  artifactIds: string[];
+  result?: unknown; // Output of the task
   error?: string; // Error message if failed
-  createdAt: Date; // When task was created
-  startedAt?: Date; // When task started processing
-  completedAt?: Date; // When task finished
-  retryCount: number; // Number of retry attempts
-  maxRetries: number; // Maximum retry attempts allowed
-  dependencies?: string[]; // IDs of tasks this depends on
-  parentTaskId?: string; // ID of parent task if this is a subtask
 }
 
 const taskTypes = ["think", "action"] as const;
@@ -29,18 +24,65 @@ const taskStatuses = [
 ] as const;
 export type TaskStatus = (typeof taskStatuses)[number];
 
-export interface AgentMetadata {
-  chatId: string;
-  name: string;
-  workerId: string;
+export interface Artifact {
+  id: string;
+  name: string; // optional, for easier lookup (e.g., "poem_1_draft")
+  type: string; // e.g., "poem", "code", "image", "file", etc.
+  content: unknown; // raw content or structured output
 }
 
 export interface WorkerAgentState {
-  purpose: string;
-  metadata: AgentMetadata;
+  workerId: string;
+  rawUserInput: string;
+  objective: string;
+  chatId: string;
+
   isRunning: boolean;
   currentTask?: Task;
   taskQueue: Task[];
   completedTasks: Task[];
-  lastProcessedAt: Date;
+
+  artifacts: Record<string, Artifact>;
 }
+
+// Define the schema for next steps
+export const NextStepSchema = z.object({
+  // Type of the step to take
+  type: z.enum(["THINKING", "ACTION"]),
+
+  thinkingDetails: z
+    .object({
+      purpose: z.string(),
+      focusQuestions: z.array(z.string()).optional(),
+    })
+    .optional(),
+
+  actionDetails: z
+    .object({
+      action: z.string(),
+      parameters: z.record(z.any()),
+      expectedOutcome: z.string().optional(),
+    })
+    .optional(),
+  // Rationale for this step
+  rationale: z.string(),
+});
+
+// Define the schema for the completion decision
+export const CompletionDecisionSchema = z.object({
+  shouldComplete: z.boolean(),
+  reason: z.string(),
+});
+
+// Define the schema for the entire thinking step output
+export const ThinkingStepOutputSchema = z.object({
+  // The actual reasoning/thought process
+  reasoning: z.string(),
+
+  nextStep: NextStepSchema,
+
+  completionDecision: CompletionDecisionSchema,
+});
+
+// Type inference
+export type ThinkingStepOutput = z.infer<typeof ThinkingStepOutputSchema>;

@@ -93,7 +93,11 @@ If the user asks to schedule a task, use the schedule tool to schedule the task.
     ]);
   }
 
-  async createWorkerAgent(name: string, purpose: string) {
+  async createWorkerAgent(
+    rawUserInput: string,
+    objective: string,
+    chatId: string
+  ) {
     const workerId = `worker-${generateId()}`;
     const workerAgent = await getAgentByName<Env, WorkerAgent>(
       this.env.WorkerAgent,
@@ -103,14 +107,13 @@ If the user asks to schedule a task, use the schedule tool to schedule the task.
     // Call the initialize method with this chat's ID, the worker's name, purpose, and the human-readable workerId
     const result = await workerAgent.initialize(
       this.ctx.id.toString(),
-      name,
-      purpose,
-      workerId
+      rawUserInput,
+      objective,
+      chatId
     );
 
     return {
       workerId,
-      workerAgent,
       result,
     };
   }
