@@ -22,6 +22,7 @@ export default function AgentInfoPage() {
   const [loading, setLoading] = useState(true);
   const [starting, setStarting] = useState(false);
   const [stopping, setStopping] = useState(false);
+  const [resetting, setResetting] = useState(false);
 
   const agent = useAgent({
     agent: "workerAgent",
@@ -76,6 +77,21 @@ export default function AgentInfoPage() {
     }
   };
 
+  const handleReset = async () => {
+    if (!id) return;
+    setResetting(true);
+    try {
+      await agent.call("reset");
+      // Refresh the info after resetting
+      const result = await agent.call("getWorkerInfo");
+      setInfo(result as WorkerInfo);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setResetting(false);
+    }
+  };
+
   if (!id) return <p className="p-4">No agent ID provided.</p>;
   if (loading) return <p className="p-4">Loading agent data…</p>;
   if (error) return <p className="p-4 text-red-600">Error: {error}</p>;
@@ -89,6 +105,13 @@ export default function AgentInfoPage() {
             {JSON.stringify(info, null, 2)}
           </pre>
           <div className="mt-4 flex justify-end gap-2">
+            <Button
+              onClick={handleReset}
+              disabled={resetting}
+              className="bg-yellow-600 hover:bg-yellow-700 text-white px-4 py-2 rounded disabled:opacity-50"
+            >
+              {resetting ? "Resetting..." : "Reset Agent"}
+            </Button>
             <Button
               onClick={handleStop}
               disabled={stopping || info?.status === "stopped"}

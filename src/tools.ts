@@ -7,7 +7,9 @@ import { z } from "zod";
 
 import { getAgentByName, getCurrentAgent } from "agents";
 import { unstable_scheduleSchema } from "agents/schedule";
-import type { Chat, Env, WorkerAgent } from "./server";
+import type { Chat, Env } from "./server";
+import type { WorkerAgent } from "./server/agents/worker";
+import type { WorkerAgentState } from "./server/agents/agents.types";
 
 /**
  * Weather information tool that requires human confirmation
@@ -116,22 +118,21 @@ const cancelScheduledTask = tool({
 const createWorkerAgent = tool({
   description: "Create a new worker agent that can perform tasks",
   parameters: z.object({
-    name: z.string().describe("The name of the worker agent"),
-    purpose: z.string().describe("The purpose or role of the worker agent"),
+    rawUserInput: z.string().describe("The user's input"),
+    objective: z.string().describe("The objective of the worker agent"),
+    chatId: z.string().describe("The ID of the chat"),
   }),
-  execute: async ({ name, purpose }) => {
+  execute: async ({ rawUserInput, objective, chatId }) => {
     const { agent } = getCurrentAgent<Chat>();
     try {
-      const { workerId, result } = await agent!.createWorkerAgent(
-        name,
-        purpose
+      const { workerId } = await agent!.createWorkerAgent(
+        rawUserInput,
+        objective,
+        chatId
       );
       return {
         workerId,
-        name: result.metadata.name,
-        purpose: result.purpose,
-        status: result.status,
-        message: `Successfully created worker agent "${name}" with ID: ${workerId}`,
+        message: `Successfully created worker agent with ID: ${workerId}`,
       };
     } catch (error) {
       console.error("Error creating worker agent", error);
@@ -159,8 +160,9 @@ const getWorkerInfo = tool({
         workerId
       );
       const info = await workerAgent.getWorkerInfo();
+      const infoObject = JSON.parse(JSON.stringify(info));
       return {
-        ...info,
+        ...infoObject,
         message: `Successfully retrieved information for worker agent ${workerId}`,
       };
     } catch (error) {
