@@ -1,14 +1,16 @@
 import { Agent, unstable_callable, type Schedule } from "agents";
 
 import {
+  ActionStepOutputSchema,
   ThinkingStepOutputSchema,
+  type Artifact,
   type Task,
   type WorkerAgentState,
-  type Artifact,
 } from "@/server/agents/agents.types";
-import { generateId, generateObject, generateText } from "ai";
+import { generateId, generateObject } from "ai";
 import { model } from "..";
 import type { Env } from "../index";
+
 export class WorkerAgent extends Agent<Env, WorkerAgentState> {
   async initialize(
     workerId: string,
@@ -103,7 +105,6 @@ export class WorkerAgent extends Agent<Env, WorkerAgentState> {
     const task = this.state.taskQueue[0];
     console.log("Task:", task);
 
-    // If no pending tasks, mark agent as stopped (purpose fulfilled)
     if (!task) {
       await this.setState({
         ...this.state,
@@ -112,23 +113,44 @@ export class WorkerAgent extends Agent<Env, WorkerAgentState> {
       return;
     }
 
-    const artifacts = task.artifactIds.map(
-      (artifactId) => this.state.artifacts[artifactId]
-    );
+    await this.processTask(task);
 
-    // Process the task based on its type
-    try {
-      switch (task.type) {
-        case "think": {
-          console.log("Processing THINK task");
-          task.status = "running";
+    this.stop();
+  }
 
-          const prompt = `You are an AI agent working towards the following objective: "${this.state.objective}"
+  private getBasePrompt(task: Task): string {
+    const artifactsList = task.artifactIds
+      .map((id) => {
+        const artifact = this.state.artifacts[id];
+        return `- ${artifact.name} (${artifact.type}): ${JSON.stringify(artifact.content)}`;
+      })
+      .join("\n");
+
+    return `You are an AI agent working towards the following objective: "${this.state.objective}"
 
 Initial user input: "${this.state.rawUserInput}"
 
 Progress so far:
 ${JSON.stringify(this.state.completedTasks)}
+
+Available artifacts for this task:
+${artifactsList}
+
+Remember:
+1. If you need to create or modify any artifacts, specify this in your response
+2. List any artifact IDs that would be helpful for the next step
+3. Be specific and detailed in your actions and reasoning
+`;
+  }
+
+  private async processTask(task: Task) {
+    task.status = "running";
+
+    try {
+      switch (task.type) {
+        case "think": {
+          console.log("Processing THINK task");
+          const thinkingPrompt = `${this.getBasePrompt(task)}
 
 Please analyze the current situation and determine the next best step:
 
@@ -137,128 +159,148 @@ Please analyze the current situation and determine the next best step:
 3. Consider any potential obstacles or challenges
 4. Determine if the objective has been fully achieved
 
-Based on this analysis, propose the single next best action to take. If the objective has been fully achieved, set the "complete" field to true.
+Important Guidelines:
+- Choose "THINKING" type if you need to analyze, plan, or make decisions
+- Choose "ACTION" type if you need to perform any concrete task or operation
+- Be explicit about which artifacts would be helpful for the next step
 
-Respond with only the action as an imperative sentence without any additional text.`;
-          console.log("Prompt:", prompt);
-          // Ask the AI to propose the next action towards the agent's purpose
+Based on this analysis, propose the single next best action to take. If the objective has been fully achieved, set the "complete" field to true.`;
+
           const { object } = await generateObject({
             model,
-            prompt,
+            prompt: thinkingPrompt,
             schema: ThinkingStepOutputSchema,
           });
 
-          console.log("Response:", object);
-
           if (object.completionDecision.shouldComplete) {
-            task.status = "completed";
-            await this.setState({
-              ...this.state,
-              isRunning: false,
-            });
-            return;
+            return this.completeTask(task, JSON.stringify(object));
           }
 
-          let nextTask: Task;
-
-          if (object.nextStep.type === "ACTION") {
-            nextTask = {
-              id: generateId(),
-              type: "action",
-              status: "pending",
-              description: object.nextStep.actionDetails?.action ?? "",
-              parameters: {},
-              artifactIds: [],
-            };
-          } else {
-            nextTask = {
-              id: generateId(),
-              type: "think",
-              status: "pending",
-              description: object.nextStep.thinkingDetails?.purpose ?? "",
-              parameters: {},
-              artifactIds: [],
-            };
-          }
-
-          // Mark THINK task completed
-          task.status = "completed";
-          task.result = JSON.stringify(object);
-
-          // Update state: remove THINK task, push ACTION task
-          await this.setState({
-            ...this.state,
-            taskQueue: [...this.state.taskQueue.slice(1), nextTask],
-            completedTasks: [...this.state.completedTasks, task],
-          });
-
-          // Schedule next execution immediately
-          await this.scheduleNextExecution(1);
-          break;
+          const nextTask = this.createNextTask(
+            object.nextStep,
+            object.nextStep.requiredArtifactIds
+          );
+          return this.updateTaskQueue(task, nextTask, JSON.stringify(object));
         }
+
         case "action": {
           console.log("Processing ACTION task");
-          task.status = "running";
+          const actionPrompt = `${this.getBasePrompt(task)}
 
-          // Use the AI to "execute" the action and get a result summary
-          const { text: actionResult } = await generateText({
+You are executing the following action: "${task.description}"
+
+Your task is to:
+1. Execute the action and provide a detailed result
+2. Specify if any artifacts need to be created or updated
+3. List any artifact IDs that would be helpful for the next step
+
+Guidelines for artifact operations:
+- If you need to create a new artifact, specify its name, type, and content
+- If you need to update an existing artifact, specify its ID and the new content
+- If no artifact operations are needed, specify "NONE" as the operation type
+
+Provide a clear and specific result of the action taken.`;
+
+          const { object } = await generateObject({
             model,
-            prompt: `You are executing the following action: "${task.description}". Describe briefly the outcome of performing this action.`,
+            prompt: actionPrompt,
+            schema: ActionStepOutputSchema,
           });
 
-          task.result = actionResult;
-          task.status = "completed";
+          // Handle artifact operations
+          if (object.artifactOperation) {
+            switch (object.artifactOperation.type) {
+              case "CREATE": {
+                if (object.artifactOperation.artifactDetails) {
+                  const artifactDetails =
+                    object.artifactOperation.artifactDetails;
+                  const newArtifact = await this.createArtifact({
+                    name: artifactDetails.name,
+                    type: artifactDetails.type,
+                    content: artifactDetails.content,
+                  });
+                  object.requiredArtifactIds.push(newArtifact.id);
+                }
+                break;
+              }
+              case "UPDATE": {
+                if (
+                  object.artifactOperation.artifactToUpdateId &&
+                  object.artifactOperation.artifactDetails
+                ) {
+                  await this.updateArtifact(
+                    object.artifactOperation.artifactToUpdateId,
+                    object.artifactOperation.artifactDetails
+                  );
+                }
+                break;
+              }
+            }
+          }
 
-          // Prepare updated queue and completed lists
-          const updatedCompleted = [...this.state.completedTasks, task];
-          const updatedQueueAfterRemoval = this.state.taskQueue.slice(1);
-
-          // After executing, add a THINK task to decide next step
-          const nextThinkTask: Task = {
+          // Create next thinking task
+          const nextTask: Task = {
             id: generateId(),
             type: "think",
             status: "pending",
-            description: "Reflect on progress and plan next action",
+            description: "Reflect on action result and plan next step",
             parameters: {},
-            artifactIds: [],
+            artifactIds: object.requiredArtifactIds,
           };
 
-          await this.setState({
-            ...this.state,
-            taskQueue: [...updatedQueueAfterRemoval, nextThinkTask],
-            completedTasks: updatedCompleted,
-          });
-
-          // Schedule next execution for remaining tasks
-          await this.scheduleNextExecution(1);
-          break;
-        }
-        default: {
-          // For any unhandled task types, mark as failed
-          task.status = "failed";
-          task.error = `Unhandled task type: ${task.type}`;
-          await this.setState({
-            ...this.state,
-            taskQueue: this.state.taskQueue.slice(1),
-            completedTasks: [...this.state.completedTasks, task],
-          });
-          // Continue processing
-          await this.scheduleNextExecution(1);
+          return this.updateTaskQueue(task, nextTask, JSON.stringify(object));
         }
       }
-
-      this.stop();
     } catch (error: any) {
       task.status = "failed";
       task.error = error.message;
-      await this.setState({
-        ...this.state,
-        taskQueue: this.state.taskQueue.slice(1),
-        completedTasks: [...this.state.completedTasks, task],
-      });
-      // Retry logic can be added here
-      await this.scheduleNextExecution(5);
+      return this.handleTaskError(task);
     }
+  }
+
+  private async completeTask(task: Task, result: string) {
+    task.status = "completed";
+    task.result = result;
+    await this.setState({
+      ...this.state,
+      isRunning: false,
+      taskQueue: this.state.taskQueue.slice(1),
+      completedTasks: [...this.state.completedTasks, task],
+    });
+  }
+
+  private createNextTask(nextStep: any, artifactIds: string[]): Task {
+    return {
+      id: generateId(),
+      type: nextStep.type === "THINKING" ? "think" : "action",
+      status: "pending",
+      description:
+        nextStep.type === "THINKING"
+          ? (nextStep.thinkingDetails?.purpose ?? "")
+          : (nextStep.actionDetails?.action ?? ""),
+      parameters: {},
+      artifactIds,
+    };
+  }
+
+  private async updateTaskQueue(task: Task, nextTask: Task, result: string) {
+    task.status = "completed";
+    task.result = result;
+    await this.setState({
+      ...this.state,
+      taskQueue: [...this.state.taskQueue.slice(1), nextTask],
+      completedTasks: [...this.state.completedTasks, task],
+    });
+    await this.scheduleNextExecution(1);
+  }
+
+  private async handleTaskError(task: Task) {
+    await this.setState({
+      ...this.state,
+      taskQueue: this.state.taskQueue.slice(1),
+      completedTasks: [...this.state.completedTasks, task],
+    });
+    await this.scheduleNextExecution(5);
   }
 
   private async scheduleNextExecution(seconds: number) {

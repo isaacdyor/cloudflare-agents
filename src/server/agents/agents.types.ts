@@ -45,10 +45,26 @@ export interface WorkerAgentState {
   artifacts: Record<string, Artifact>;
 }
 
+// Define the schema for artifact operations
+export const ArtifactOperationSchema = z
+  .object({
+    type: z.enum(["CREATE", "UPDATE", "NONE"]),
+    artifactDetails: z.object({
+      name: z.string(),
+      type: z.string(),
+      content: z.unknown(),
+    }),
+    artifactToUpdateId: z.string().optional(),
+  })
+  .optional();
+
 // Define the schema for next steps
 export const NextStepSchema = z.object({
   // Type of the step to take
   type: z.enum(["THINKING", "ACTION"]),
+
+  // Artifact IDs that would be helpful for the next step
+  requiredArtifactIds: z.array(z.string()),
 
   thinkingDetails: z
     .object({
@@ -74,15 +90,24 @@ export const CompletionDecisionSchema = z.object({
   reason: z.string(),
 });
 
-// Define the schema for the entire thinking step output
+// Define the schema for the thinking step output
 export const ThinkingStepOutputSchema = z.object({
   // The actual reasoning/thought process
   reasoning: z.string(),
-
   nextStep: NextStepSchema,
-
   completionDecision: CompletionDecisionSchema,
+});
+
+// Define the schema for action step output
+export const ActionStepOutputSchema = z.object({
+  // The execution result
+  result: z.string(),
+  // Any artifacts that should be created or updated
+  artifactOperation: ArtifactOperationSchema,
+  // Artifact IDs that would be helpful for the next step
+  requiredArtifactIds: z.array(z.string()),
 });
 
 // Type inference
 export type ThinkingStepOutput = z.infer<typeof ThinkingStepOutputSchema>;
+export type ActionStepOutput = z.infer<typeof ActionStepOutputSchema>;
