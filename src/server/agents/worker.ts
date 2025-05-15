@@ -1,146 +1,8 @@
-import {
-  Agent,
-  routeAgentRequest,
-  type AgentNamespace,
-  type Schedule,
-  getAgentByName,
-  unstable_callable,
-} from "agents";
+import { Agent, unstable_callable, type Schedule } from "agents";
 
-import { unstable_getSchedulePrompt } from "agents/schedule";
-
-import { AIChatAgent } from "agents/ai-chat-agent";
-import {
-  createDataStreamResponse,
-  generateId,
-  generateText,
-  streamText,
-  type StreamTextOnFinishCallback,
-  type ToolSet,
-} from "ai";
-import { openai } from "@ai-sdk/openai";
-import { processToolCalls } from "./utils";
-import { tools, executions } from "./tools";
-import type { AgentMetadata, WorkerAgentState, Task } from "./types";
-import { TaskStatus, TaskType } from "./types";
-// import { env } from "cloudflare:workers";
-
-export interface Env {
-  Chat: AgentNamespace<Chat>;
-  WorkerAgent: AgentNamespace<WorkerAgent>;
-  ASSETS: Fetcher;
-}
-
-const model = openai("gpt-4o-2024-11-20");
-// Cloudflare AI Gateway
-// const openai = createOpenAI({
-//   apiKey: env.OPENAI_API_KEY,
-//   baseURL: env.GATEWAY_BASE_URL,
-// });
-
-/**
- * Chat Agent implementation that handles real-time AI chat interactions
- */
-export class Chat extends AIChatAgent<Env> {
-  /**
-   * Handles incoming chat messages and manages the response stream
-   * @param onFinish - Callback function executed when streaming completes
-   */
-
-  async onChatMessage(
-    onFinish: StreamTextOnFinishCallback<ToolSet>,
-    options?: { abortSignal?: AbortSignal }
-  ) {
-    // const mcpConnection = await this.mcp.connect(
-    //   "https://path-to-mcp-server/sse"
-    // );
-
-    // Collect all tools, including MCP tools
-    const allTools = {
-      ...tools,
-      ...this.mcp.unstable_getAITools(),
-    };
-
-    // Create a streaming response that handles both text and tool outputs
-    const dataStreamResponse = createDataStreamResponse({
-      execute: async (dataStream) => {
-        // Process any pending tool calls from previous messages
-        // This handles human-in-the-loop confirmations for tools
-        const processedMessages = await processToolCalls({
-          messages: this.messages,
-          dataStream,
-          tools: allTools,
-          executions,
-        });
-
-        // Stream the AI response using GPT-4
-        const result = streamText({
-          model,
-          system: `You are a helpful assistant that can do various tasks... 
-
-${unstable_getSchedulePrompt({ date: new Date() })}
-
-If the user asks to schedule a task, use the schedule tool to schedule the task.
-`,
-          messages: processedMessages,
-          tools: allTools,
-          onFinish: async (args) => {
-            onFinish(
-              args as Parameters<StreamTextOnFinishCallback<ToolSet>>[0]
-            );
-            // await this.mcp.closeConnection(mcpConnection.id);
-          },
-          onError: (error) => {
-            console.error("Error while streaming:", error);
-          },
-          maxSteps: 10,
-        });
-
-        // Merge the AI response stream with tool execution outputs
-        result.mergeIntoDataStream(dataStream);
-      },
-    });
-
-    return dataStreamResponse;
-  }
-  async executeTask(description: string, task: Schedule<string>) {
-    await this.saveMessages([
-      ...this.messages,
-      {
-        id: generateId(),
-        role: "user",
-        content: `Running scheduled task: ${description}`,
-        createdAt: new Date(),
-      },
-    ]);
-  }
-
-  async createWorkerAgent(name: string, purpose: string) {
-    const workerId = `worker-${generateId()}`;
-    const workerAgent = await getAgentByName<Env, WorkerAgent>(
-      this.env.WorkerAgent,
-      workerId
-    );
-
-    // Call the initialize method with this chat's ID, the worker's name, purpose, and the human-readable workerId
-    const result = await workerAgent.initialize(
-      this.ctx.id.toString(),
-      name,
-      purpose,
-      workerId
-    );
-
-    return {
-      workerId,
-      workerAgent,
-      result,
-    };
-  }
-
-  getEnvBinding<T>(key: string): T {
-    return this.env[key as keyof Env] as T;
-  }
-}
+import type { Task, WorkerAgentState } from "@/server/agents/agents.types";
+import { generateId, generateText } from "ai";
+import { model } from "..";
 
 export class WorkerAgent extends Agent<Env, WorkerAgentState> {
   async initialize(
@@ -152,8 +14,8 @@ export class WorkerAgent extends Agent<Env, WorkerAgentState> {
     // Create initial think task to analyze purpose and plan
     const initialTask: Task = {
       id: generateId(),
-      type: TaskType.THINK,
-      status: TaskStatus.PENDING,
+      type: "think",
+      status: "pending",
       priority: 1,
       description: "Initial analysis of agent purpose and planning",
       parameters: { purpose },
@@ -230,9 +92,9 @@ export class WorkerAgent extends Agent<Env, WorkerAgentState> {
     // Process the task based on its type
     try {
       switch (task.type) {
-        case TaskType.THINK: {
+        case "think": {
           console.log("Processing THINK task");
-          task.status = TaskStatus.RUNNING;
+          task.status = "running";
           task.startedAt = new Date();
 
           const prompt = `Your purpose is: "${this.state.purpose}". Based on your purpose, propose the single next best action you should take to make progress. Respond with only the action as an imperative sentence without any additional text.`;
@@ -247,8 +109,8 @@ export class WorkerAgent extends Agent<Env, WorkerAgentState> {
 
           const actionTask: Task = {
             id: generateId(),
-            type: TaskType.ACTION,
-            status: TaskStatus.PENDING,
+            type: "action",
+            status: "pending",
             priority: 1,
             description: aiPlan,
             parameters: {},
@@ -258,7 +120,7 @@ export class WorkerAgent extends Agent<Env, WorkerAgentState> {
           };
 
           // Mark THINK task completed
-          task.status = TaskStatus.COMPLETED;
+          task.status = "completed";
           task.completedAt = new Date();
 
           // Update state: remove THINK task, push ACTION task
@@ -273,9 +135,9 @@ export class WorkerAgent extends Agent<Env, WorkerAgentState> {
           await this.scheduleNextExecution(1);
           break;
         }
-        case TaskType.ACTION: {
+        case "action": {
           console.log("Processing ACTION task");
-          task.status = TaskStatus.RUNNING;
+          task.status = "running";
           task.startedAt = new Date();
 
           // Use the AI to "execute" the action and get a result summary
@@ -285,7 +147,7 @@ export class WorkerAgent extends Agent<Env, WorkerAgentState> {
           });
 
           task.result = actionResult;
-          task.status = TaskStatus.COMPLETED;
+          task.status = "completed";
           task.completedAt = new Date();
 
           // Prepare updated queue and completed lists
@@ -295,8 +157,8 @@ export class WorkerAgent extends Agent<Env, WorkerAgentState> {
           // After executing, add a THINK task to decide next step
           const nextThinkTask: Task = {
             id: generateId(),
-            type: TaskType.THINK,
-            status: TaskStatus.PENDING,
+            type: "think",
+            status: "pending",
             priority: 1,
             description: "Reflect on progress and plan next action",
             parameters: {},
@@ -318,7 +180,7 @@ export class WorkerAgent extends Agent<Env, WorkerAgentState> {
         }
         default: {
           // For any unhandled task types, mark as failed
-          task.status = TaskStatus.FAILED;
+          task.status = "failed";
           task.error = `Unhandled task type: ${task.type}`;
           await this.setState({
             ...this.state,
@@ -331,7 +193,7 @@ export class WorkerAgent extends Agent<Env, WorkerAgentState> {
         }
       }
     } catch (error: any) {
-      task.status = TaskStatus.FAILED;
+      task.status = "failed";
       task.error = error.message;
       await this.setState({
         ...this.state,
@@ -382,55 +244,3 @@ export class WorkerAgent extends Agent<Env, WorkerAgentState> {
     }
   }
 }
-
-/**
- * Worker entry point that routes incoming requests to the appropriate handler
- */
-export default {
-  async fetch(request: Request, env: Env, ctx: ExecutionContext) {
-    const url = new URL(request.url);
-
-    // Endpoint to let the UI check if OPENAI_API_KEY is configured
-    if (url.pathname === "/check-open-ai-key") {
-      const hasOpenAIKey = !!process.env.OPENAI_API_KEY;
-      return Response.json({ success: hasOpenAIKey });
-    }
-
-    // Log helpful message if key is missing
-    if (!process.env.OPENAI_API_KEY) {
-      console.error(
-        "OPENAI_API_KEY is not set, don't forget to set it locally in .dev.vars, and use `wrangler secret bulk .dev.vars` to upload it to production"
-      );
-    }
-
-    // First, try to handle any Agent/Durable Object request
-    const agentResponse = await routeAgentRequest(request, env);
-    if (agentResponse) {
-      return agentResponse;
-    }
-
-    // Next, attempt to serve static assets (JS, CSS, images, etc.)
-    if (env.ASSETS) {
-      const assetResponse = await env.ASSETS.fetch(request.url);
-      if (assetResponse.status !== 404) {
-        return assetResponse;
-      }
-
-      // For any unknown path, fall back to serving the SPA entrypoint (index.html)
-      const url = new URL(request.url);
-      url.pathname = "/index.html";
-      const htmlResponse = await env.ASSETS.fetch(url.toString());
-      if (htmlResponse.status !== 404) {
-        // Ensure correct content-type header for browsers
-        const newHeaders = new Headers(htmlResponse.headers);
-        newHeaders.set("content-type", "text/html;charset=UTF-8");
-        return new Response(htmlResponse.body, {
-          status: htmlResponse.status,
-          headers: newHeaders,
-        });
-      }
-    }
-
-    return new Response("Not found", { status: 404 });
-  },
-} satisfies ExportedHandler<Env>;

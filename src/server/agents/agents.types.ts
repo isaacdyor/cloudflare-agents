@@ -1,9 +1,3 @@
-export interface AgentMetadata {
-  chatId: string;
-  name: string;
-  workerId: string;
-}
-
 export interface Task {
   id: string; // Unique identifier for the task
   type: TaskType; // What kind of task it is
@@ -22,23 +16,23 @@ export interface Task {
   parentTaskId?: string; // ID of parent task if this is a subtask
 }
 
-export enum TaskType {
-  THINK = "think", // AI decision making
-  ACTION = "action", // Tool execution
-  VERIFY = "verify", // Result verification
-  CLEANUP = "cleanup", // Cleanup operations
-  SCHEDULE = "schedule", // For scheduling future tasks
-  MONITOR = "monitor", // For monitoring tasks
-  REPORT = "report", // For reporting results
-}
+const taskTypes = ["think", "action"] as const;
+export type TaskType = (typeof taskTypes)[number];
 
-export enum TaskStatus {
-  PENDING = "pending", // Waiting to be processed
-  RUNNING = "running", // Currently being processed
-  COMPLETED = "completed", // Successfully finished
-  FAILED = "failed", // Failed to complete
-  BLOCKED = "blocked", // Waiting on dependencies
-  CANCELLED = "cancelled", // Explicitly cancelled
+const taskStatuses = [
+  "pending",
+  "running",
+  "completed",
+  "failed",
+  "blocked",
+  "cancelled",
+] as const;
+export type TaskStatus = (typeof taskStatuses)[number];
+
+export interface AgentMetadata {
+  chatId: string;
+  name: string;
+  workerId: string;
 }
 
 export interface WorkerAgentState {
