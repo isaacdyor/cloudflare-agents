@@ -1,4 +1,4 @@
-import { Agent, unstable_callable, type Schedule } from "agents";
+import { Agent, unstable_callable } from "agents";
 
 import {
   ActionStepOutputSchema,
@@ -22,8 +22,7 @@ export class WorkerAgent extends Agent<Env, WorkerAgentState> {
     const initialTask: Task = {
       id: generateId(),
       type: "think",
-      status: "pending",
-      description: "Initial analysis of agent purpose and planning",
+      goal: "Initial analysis of agent purpose and planning",
       parameters: { rawUserInput, objective },
       artifactIds: [],
     };
@@ -78,8 +77,7 @@ export class WorkerAgent extends Agent<Env, WorkerAgentState> {
     const initialTask: Task = {
       id: generateId(),
       type: "think",
-      status: "pending",
-      description: "Initial analysis of agent purpose and planning",
+      goal: "Initial analysis of agent purpose and planning",
       parameters: {
         rawUserInput: this.state.rawUserInput,
         objective: this.state.objective,
@@ -131,7 +129,7 @@ export class WorkerAgent extends Agent<Env, WorkerAgentState> {
 Initial user input: "${this.state.rawUserInput}"
 
 Progress so far:
-${JSON.stringify(this.state.completedTasks)}
+${this.state.completedTasks.map((task) => `Goal: ${task.goal}, Result: ${task.result}`).join("\n")}
 
 Available artifacts for this task:
 ${artifactsList}
@@ -144,8 +142,6 @@ Remember:
   }
 
   private async processTask(task: Task) {
-    task.status = "running";
-
     try {
       switch (task.type) {
         case "think": {
@@ -172,14 +168,18 @@ Based on this analysis, propose the single next best action to take. If the obje
             schema: ThinkingStepOutputSchema,
           });
 
+          console.log("Thinking step output:", object);
+
           if (object.completionDecision.shouldComplete) {
-            return this.completeTask(task, JSON.stringify(object));
+            return this.completeTask(task, object.reasoning);
           }
 
-          const nextTask = this.createNextTask(
-            object.nextStep,
-            object.nextStep.requiredArtifactIds
-          );
+          const nextTask = {
+            id: generateId(),
+            type: object.nextStep.type,
+            goal: object.nextStep.purpose,
+            artifactIds: object.nextStep.requiredArtifactIds,
+          };
           return this.updateTaskQueue(task, nextTask, JSON.stringify(object));
         }
 
@@ -187,7 +187,7 @@ Based on this analysis, propose the single next best action to take. If the obje
           console.log("Processing ACTION task");
           const actionPrompt = `${this.getBasePrompt(task)}
 
-You are executing the following action: "${task.description}"
+The goal of your current task is: "${task.goal}"
 
 Your task is to:
 1. Execute the action and provide a detailed result
@@ -207,10 +207,12 @@ Provide a clear and specific result of the action taken.`;
             schema: ActionStepOutputSchema,
           });
 
+          console.log("Action step output:", object);
+
           // Handle artifact operations
           if (object.artifactOperation) {
             switch (object.artifactOperation.type) {
-              case "CREATE": {
+              case "create": {
                 if (object.artifactOperation.artifactDetails) {
                   const artifactDetails =
                     object.artifactOperation.artifactDetails;
@@ -223,7 +225,7 @@ Provide a clear and specific result of the action taken.`;
                 }
                 break;
               }
-              case "UPDATE": {
+              case "update": {
                 if (
                   object.artifactOperation.artifactToUpdateId &&
                   object.artifactOperation.artifactDetails
@@ -242,8 +244,7 @@ Provide a clear and specific result of the action taken.`;
           const nextTask: Task = {
             id: generateId(),
             type: "think",
-            status: "pending",
-            description: "Reflect on action result and plan next step",
+            goal: "Reflect on action result and plan next step",
             parameters: {},
             artifactIds: object.requiredArtifactIds,
           };
@@ -252,14 +253,12 @@ Provide a clear and specific result of the action taken.`;
         }
       }
     } catch (error: any) {
-      task.status = "failed";
       task.error = error.message;
       return this.handleTaskError(task);
     }
   }
 
   private async completeTask(task: Task, result: string) {
-    task.status = "completed";
     task.result = result;
     await this.setState({
       ...this.state,
@@ -269,22 +268,7 @@ Provide a clear and specific result of the action taken.`;
     });
   }
 
-  private createNextTask(nextStep: any, artifactIds: string[]): Task {
-    return {
-      id: generateId(),
-      type: nextStep.type === "THINKING" ? "think" : "action",
-      status: "pending",
-      description:
-        nextStep.type === "THINKING"
-          ? (nextStep.thinkingDetails?.purpose ?? "")
-          : (nextStep.actionDetails?.action ?? ""),
-      parameters: {},
-      artifactIds,
-    };
-  }
-
   private async updateTaskQueue(task: Task, nextTask: Task, result: string) {
-    task.status = "completed";
     task.result = result;
     await this.setState({
       ...this.state,
@@ -312,9 +296,6 @@ Provide a clear and specific result of the action taken.`;
 
   @unstable_callable()
   async getWorkerInfo() {
-    // Get all scheduled events
-    const scheduledEvents = await this.listScheduledEvents();
-
     return {
       workerId: this.state.workerId,
       rawUserInput: this.state.rawUserInput,
@@ -324,22 +305,8 @@ Provide a clear and specific result of the action taken.`;
       completedTasks: this.state.completedTasks,
       taskQueue: this.state.taskQueue,
       isRunning: this.state.isRunning,
-      scheduledEvents: scheduledEvents.map((event: Schedule<string>) => ({
-        scheduledTime: new Date(event.time),
-        method: event.callback,
-        id: event.id,
-      })),
+      artifacts: this.state.artifacts,
     };
-  }
-
-  private async listScheduledEvents() {
-    try {
-      // Use the base Agent class's getSchedules method
-      return await super.getSchedules();
-    } catch (error) {
-      console.error("Error getting scheduled events:", error);
-      return [];
-    }
   }
 
   @unstable_callable()

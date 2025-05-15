@@ -2,10 +2,9 @@ import { z } from "zod";
 
 export interface Task {
   id: string; // Unique identifier for the task
+  goal: string; // The goal of the task
   type: TaskType; // What kind of task it is
-  status: TaskStatus; // Current state of the task
-  description: string; // Human-readable description
-  parameters: Record<string, unknown>; // Task-specific parameters
+  parameters?: Record<string, unknown>; // Task-specific parameters
   artifactIds: string[];
   result?: unknown; // Output of the task
   error?: string; // Error message if failed
@@ -14,21 +13,11 @@ export interface Task {
 const taskTypes = ["think", "action"] as const;
 export type TaskType = (typeof taskTypes)[number];
 
-const taskStatuses = [
-  "pending",
-  "running",
-  "completed",
-  "failed",
-  "blocked",
-  "cancelled",
-] as const;
-export type TaskStatus = (typeof taskStatuses)[number];
-
 export interface Artifact {
   id: string;
-  name: string; // optional, for easier lookup (e.g., "poem_1_draft")
-  type: string; // e.g., "poem", "code", "image", "file", etc.
-  content: unknown; // raw content or structured output
+  name: string;
+  type: string;
+  content: unknown;
 }
 
 export interface WorkerAgentState {
@@ -45,10 +34,13 @@ export interface WorkerAgentState {
   artifacts: Record<string, Artifact>;
 }
 
+const ArtifactOperationType = ["create", "update", "none"] as const;
+export type ArtifactOperationType = (typeof ArtifactOperationType)[number];
+
 // Define the schema for artifact operations
 export const ArtifactOperationSchema = z
   .object({
-    type: z.enum(["CREATE", "UPDATE", "NONE"]),
+    type: z.enum(ArtifactOperationType),
     artifactDetails: z.object({
       name: z.string(),
       type: z.string(),
@@ -61,27 +53,23 @@ export const ArtifactOperationSchema = z
 // Define the schema for next steps
 export const NextStepSchema = z.object({
   // Type of the step to take
-  type: z.enum(["THINKING", "ACTION"]),
+  type: z.enum(taskTypes),
 
   // Artifact IDs that would be helpful for the next step
-  requiredArtifactIds: z.array(z.string()),
+  requiredArtifactIds: z.array(z.string()).optional(),
 
-  thinkingDetails: z
-    .object({
-      purpose: z.string(),
-      focusQuestions: z.array(z.string()).optional(),
-    })
-    .optional(),
-
-  actionDetails: z
-    .object({
-      action: z.string(),
-      parameters: z.record(z.any()),
-      expectedOutcome: z.string().optional(),
-    })
-    .optional(),
+  purpose: z
+    .string()
+    .describe(
+      "The purpose of the step. This is what the next step will try to accomplish"
+    ),
+  parameters: z.record(z.any()).optional(),
   // Rationale for this step
-  rationale: z.string(),
+  rationale: z
+    .string()
+    .describe(
+      "The rationale for the step. This is why the next step is necessary"
+    ),
 });
 
 // Define the schema for the completion decision
