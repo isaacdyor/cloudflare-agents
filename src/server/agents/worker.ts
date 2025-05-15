@@ -3,7 +3,7 @@ import { Agent, unstable_callable, type Schedule } from "agents";
 import type { Task, WorkerAgentState } from "@/server/agents/agents.types";
 import { generateId, generateText } from "ai";
 import { model } from "..";
-
+import type { Env } from "../index";
 export class WorkerAgent extends Agent<Env, WorkerAgentState> {
   async initialize(
     chatId: string,
