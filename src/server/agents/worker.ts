@@ -3,7 +3,6 @@ import { Agent, unstable_callable } from "agents";
 import {
   ActionStepOutputSchema,
   ThinkingStepOutputSchema,
-  type Artifact,
   type Task,
   type WorkerAgentState,
 } from "@/server/agents/agents.types";
@@ -24,7 +23,6 @@ export class WorkerAgent extends Agent<Env, WorkerAgentState> {
       type: "think",
       goal: "Initial analysis of agent purpose and planning",
       parameters: { rawUserInput, objective },
-      artifactIds: [],
     };
 
     // Store the chat ID that created this worker along with its name, purpose, and the human-readable workerId
@@ -36,7 +34,6 @@ export class WorkerAgent extends Agent<Env, WorkerAgentState> {
       isRunning: false,
       taskQueue: [initialTask],
       completedTasks: [],
-      artifacts: {},
     });
 
     return {
@@ -82,7 +79,6 @@ export class WorkerAgent extends Agent<Env, WorkerAgentState> {
         rawUserInput: this.state.rawUserInput,
         objective: this.state.objective,
       },
-      artifactIds: [],
     };
 
     await this.setState({
@@ -112,27 +108,17 @@ export class WorkerAgent extends Agent<Env, WorkerAgentState> {
     }
 
     await this.processTask(task);
-
-    this.stop();
   }
 
-  private getBasePrompt(task: Task): string {
-    const artifactsList = task.artifactIds
-      .map((id) => {
-        const artifact = this.state.artifacts[id];
-        return `- ${artifact.name} (${artifact.type}): ${JSON.stringify(artifact.content)}`;
-      })
-      .join("\n");
-
+  private getBasePrompt(): string {
     return `You are an AI agent working towards the following objective: "${this.state.objective}"
 
 Initial user input: "${this.state.rawUserInput}"
 
 Progress so far:
-${this.state.completedTasks.map((task) => `Goal: ${task.goal}, Result: ${task.result}`).join("\n")}
+${this.state.completedTasks.map((task, index) => `Step ${index + 1}: {Goal: ${task.goal}, Result: ${task.result}}`).join("\n")}
 
-Available artifacts for this task:
-${artifactsList}
+
 
 Remember:
 1. If you need to create or modify any artifacts, specify this in your response
@@ -146,9 +132,9 @@ Remember:
       switch (task.type) {
         case "think": {
           console.log("Processing THINK task");
-          const thinkingPrompt = `${this.getBasePrompt(task)}
+          const thinkingPrompt = `${this.getBasePrompt()}
 
-Please analyze the current situation and determine the next best step:
+Please analyze the current situation and determine the next best step. Your goal is to achieve the objective: "${task.goal}}"
 
 1. Review what has been accomplished so far
 2. Assess what remains to be done to achieve the objective
@@ -168,6 +154,8 @@ Based on this analysis, propose the single next best action to take. If the obje
             schema: ThinkingStepOutputSchema,
           });
 
+          task.prompt = thinkingPrompt;
+
           console.log("Thinking step output:", object);
 
           if (object.completionDecision.shouldComplete) {
@@ -177,29 +165,35 @@ Based on this analysis, propose the single next best action to take. If the obje
           const nextTask = {
             id: generateId(),
             type: object.nextStep.type,
-            goal: object.nextStep.purpose,
-            artifactIds: object.nextStep.requiredArtifactIds,
+            goal: object.nextStep.goal,
           };
-          return this.updateTaskQueue(task, nextTask, JSON.stringify(object));
+          return this.updateTaskQueue(task, nextTask, object.reasoning);
         }
 
         case "action": {
           console.log("Processing ACTION task");
-          const actionPrompt = `${this.getBasePrompt(task)}
+          const actionPrompt = `${this.getBasePrompt()}
 
 The goal of your current task is: "${task.goal}"
 
 Your task is to:
-1. Execute the action and provide a detailed result
-2. Specify if any artifacts need to be created or updated
-3. List any artifact IDs that would be helpful for the next step
+1. Execute the action and provide a detailed result in the "result" field
+2. After completing the action, reflect on what needs to be done next
+3. Specify if any artifacts need to be created or updated
+4. List any artifact IDs that would be helpful for the next step
 
 Guidelines for artifact operations:
 - If you need to create a new artifact, specify its name, type, and content
 - If you need to update an existing artifact, specify its ID and the new content
 - If no artifact operations are needed, specify "NONE" as the operation type
 
-Provide a clear and specific result of the action taken.`;
+Important: The next step MUST be a "think" type task where you reflect on:
+- What was accomplished in this action
+- What new information or insights were gained
+- What should be the next focus based on the objective
+- Any potential challenges or considerations for the next steps
+
+Provide a clear and specific result of the action taken in the "result" field, and ensure the nextStep is always a "think" type task with a clear goal for reflection.`;
 
           const { object } = await generateObject({
             model,
@@ -207,49 +201,19 @@ Provide a clear and specific result of the action taken.`;
             schema: ActionStepOutputSchema,
           });
 
-          console.log("Action step output:", object);
+          task.prompt = actionPrompt;
 
-          // Handle artifact operations
-          if (object.artifactOperation) {
-            switch (object.artifactOperation.type) {
-              case "create": {
-                if (object.artifactOperation.artifactDetails) {
-                  const artifactDetails =
-                    object.artifactOperation.artifactDetails;
-                  const newArtifact = await this.createArtifact({
-                    name: artifactDetails.name,
-                    type: artifactDetails.type,
-                    content: artifactDetails.content,
-                  });
-                  object.requiredArtifactIds.push(newArtifact.id);
-                }
-                break;
-              }
-              case "update": {
-                if (
-                  object.artifactOperation.artifactToUpdateId &&
-                  object.artifactOperation.artifactDetails
-                ) {
-                  await this.updateArtifact(
-                    object.artifactOperation.artifactToUpdateId,
-                    object.artifactOperation.artifactDetails
-                  );
-                }
-                break;
-              }
-            }
-          }
+          console.log("Action step output:", object);
 
           // Create next thinking task
           const nextTask: Task = {
             id: generateId(),
             type: "think",
-            goal: "Reflect on action result and plan next step",
-            parameters: {},
-            artifactIds: object.requiredArtifactIds,
+            goal: object.nextStep.goal,
+            parameters: object.nextStep.parameters,
           };
 
-          return this.updateTaskQueue(task, nextTask, JSON.stringify(object));
+          return this.updateTaskQueue(task, nextTask, object.result);
         }
       }
     } catch (error: any) {
@@ -305,78 +269,6 @@ Provide a clear and specific result of the action taken.`;
       completedTasks: this.state.completedTasks,
       taskQueue: this.state.taskQueue,
       isRunning: this.state.isRunning,
-      artifacts: this.state.artifacts,
     };
-  }
-
-  @unstable_callable()
-  async createArtifact(artifact: Omit<Artifact, "id">) {
-    const newArtifact: Artifact = {
-      ...artifact,
-      id: generateId(),
-    };
-
-    await this.setState({
-      ...this.state,
-      artifacts: {
-        ...this.state.artifacts,
-        [newArtifact.id]: newArtifact,
-      },
-    });
-
-    return newArtifact;
-  }
-
-  @unstable_callable()
-  async getArtifact(artifactId: string) {
-    const artifact = this.state.artifacts[artifactId];
-    if (!artifact) {
-      throw new Error(`Artifact with ID ${artifactId} not found`);
-    }
-    return artifact;
-  }
-
-  @unstable_callable()
-  async updateArtifact(
-    artifactId: string,
-    updates: Partial<Omit<Artifact, "id">>
-  ) {
-    const existingArtifact = this.state.artifacts[artifactId];
-    if (!existingArtifact) {
-      throw new Error(`Artifact with ID ${artifactId} not found`);
-    }
-
-    const updatedArtifact: Artifact = {
-      ...existingArtifact,
-      ...updates,
-    };
-
-    await this.setState({
-      ...this.state,
-      artifacts: {
-        ...this.state.artifacts,
-        [artifactId]: updatedArtifact,
-      },
-    });
-
-    return updatedArtifact;
-  }
-
-  @unstable_callable()
-  async deleteArtifact(artifactId: string) {
-    const existingArtifact = this.state.artifacts[artifactId];
-    if (!existingArtifact) {
-      throw new Error(`Artifact with ID ${artifactId} not found`);
-    }
-
-    const { [artifactId]: deletedArtifact, ...remainingArtifacts } =
-      this.state.artifacts;
-
-    await this.setState({
-      ...this.state,
-      artifacts: remainingArtifacts,
-    });
-
-    return deletedArtifact;
   }
 }

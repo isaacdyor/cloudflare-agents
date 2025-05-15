@@ -5,7 +5,7 @@ export interface Task {
   goal: string; // The goal of the task
   type: TaskType; // What kind of task it is
   parameters?: Record<string, unknown>; // Task-specific parameters
-  artifactIds: string[];
+  prompt?: string; // Prompt for the task
   result?: unknown; // Output of the task
   error?: string; // Error message if failed
 }
@@ -13,52 +13,23 @@ export interface Task {
 const taskTypes = ["think", "action"] as const;
 export type TaskType = (typeof taskTypes)[number];
 
-export interface Artifact {
-  id: string;
-  name: string;
-  type: string;
-  content: unknown;
-}
-
 export interface WorkerAgentState {
   workerId: string;
   rawUserInput: string;
   objective: string;
   chatId: string;
-
   isRunning: boolean;
   currentTask?: Task;
   taskQueue: Task[];
   completedTasks: Task[];
-
-  artifacts: Record<string, Artifact>;
 }
-
-const ArtifactOperationType = ["create", "update", "none"] as const;
-export type ArtifactOperationType = (typeof ArtifactOperationType)[number];
-
-// Define the schema for artifact operations
-export const ArtifactOperationSchema = z
-  .object({
-    type: z.enum(ArtifactOperationType),
-    artifactDetails: z.object({
-      name: z.string(),
-      type: z.string(),
-      content: z.unknown(),
-    }),
-    artifactToUpdateId: z.string().optional(),
-  })
-  .optional();
 
 // Define the schema for next steps
 export const NextStepSchema = z.object({
   // Type of the step to take
   type: z.enum(taskTypes),
 
-  // Artifact IDs that would be helpful for the next step
-  requiredArtifactIds: z.array(z.string()).optional(),
-
-  purpose: z
+  goal: z
     .string()
     .describe(
       "The purpose of the step. This is what the next step will try to accomplish"
@@ -90,10 +61,7 @@ export const ThinkingStepOutputSchema = z.object({
 export const ActionStepOutputSchema = z.object({
   // The execution result
   result: z.string(),
-  // Any artifacts that should be created or updated
-  artifactOperation: ArtifactOperationSchema,
-  // Artifact IDs that would be helpful for the next step
-  requiredArtifactIds: z.array(z.string()),
+  nextStep: NextStepSchema,
 });
 
 // Type inference
