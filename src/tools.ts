@@ -5,10 +5,9 @@
 import { tool } from "ai";
 import { z } from "zod";
 
-import type { Chat, Env } from "./server";
-import { getCurrentAgent, getAgentByName, type AgentNamespace } from "agents";
+import { getAgentByName, getCurrentAgent } from "agents";
 import { unstable_scheduleSchema } from "agents/schedule";
-import type { WorkerAgent } from "./server";
+import type { Chat, Env, WorkerAgent } from "./server";
 
 /**
  * Weather information tool that requires human confirmation
@@ -129,7 +128,7 @@ const createWorkerAgent = tool({
       );
       return {
         workerId,
-        name: result.name,
+        name: result.metadata.name,
         purpose: result.purpose,
         status: result.status,
         message: `Successfully created worker agent "${name}" with ID: ${workerId}`,
