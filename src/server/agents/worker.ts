@@ -4,11 +4,11 @@ import {
   ThinkingStepOutputSchema,
   type Task,
   type WorkerAgentState,
+  type Artifact,
 } from "@/server/agents/agents.types";
 import { generateId, generateObject, generateText } from "ai";
 import { model } from "..";
 import type { Env } from "../index";
-import { z } from "zod";
 export class WorkerAgent extends Agent<Env, WorkerAgentState> {
   async initialize(
     workerId: string,
@@ -23,6 +23,7 @@ export class WorkerAgent extends Agent<Env, WorkerAgentState> {
       status: "pending",
       description: "Initial analysis of agent purpose and planning",
       parameters: { rawUserInput, objective },
+      artifactIds: [],
     };
 
     // Store the chat ID that created this worker along with its name, purpose, and the human-readable workerId
@@ -34,6 +35,7 @@ export class WorkerAgent extends Agent<Env, WorkerAgentState> {
       isRunning: false,
       taskQueue: [initialTask],
       completedTasks: [],
+      artifacts: {},
     });
 
     return {
@@ -80,6 +82,7 @@ export class WorkerAgent extends Agent<Env, WorkerAgentState> {
         rawUserInput: this.state.rawUserInput,
         objective: this.state.objective,
       },
+      artifactIds: [],
     };
 
     await this.setState({
@@ -108,6 +111,10 @@ export class WorkerAgent extends Agent<Env, WorkerAgentState> {
       });
       return;
     }
+
+    const artifacts = task.artifactIds.map(
+      (artifactId) => this.state.artifacts[artifactId]
+    );
 
     // Process the task based on its type
     try {
@@ -161,6 +168,7 @@ Respond with only the action as an imperative sentence without any additional te
               status: "pending",
               description: object.nextStep.actionDetails?.action ?? "",
               parameters: {},
+              artifactIds: [],
             };
           } else {
             nextTask = {
@@ -169,6 +177,7 @@ Respond with only the action as an imperative sentence without any additional te
               status: "pending",
               description: object.nextStep.thinkingDetails?.purpose ?? "",
               parameters: {},
+              artifactIds: [],
             };
           }
 
@@ -211,6 +220,7 @@ Respond with only the action as an imperative sentence without any additional te
             status: "pending",
             description: "Reflect on progress and plan next action",
             parameters: {},
+            artifactIds: [],
           };
 
           await this.setState({
@@ -288,5 +298,76 @@ Respond with only the action as an imperative sentence without any additional te
       console.error("Error getting scheduled events:", error);
       return [];
     }
+  }
+
+  @unstable_callable()
+  async createArtifact(artifact: Omit<Artifact, "id">) {
+    const newArtifact: Artifact = {
+      ...artifact,
+      id: generateId(),
+    };
+
+    await this.setState({
+      ...this.state,
+      artifacts: {
+        ...this.state.artifacts,
+        [newArtifact.id]: newArtifact,
+      },
+    });
+
+    return newArtifact;
+  }
+
+  @unstable_callable()
+  async getArtifact(artifactId: string) {
+    const artifact = this.state.artifacts[artifactId];
+    if (!artifact) {
+      throw new Error(`Artifact with ID ${artifactId} not found`);
+    }
+    return artifact;
+  }
+
+  @unstable_callable()
+  async updateArtifact(
+    artifactId: string,
+    updates: Partial<Omit<Artifact, "id">>
+  ) {
+    const existingArtifact = this.state.artifacts[artifactId];
+    if (!existingArtifact) {
+      throw new Error(`Artifact with ID ${artifactId} not found`);
+    }
+
+    const updatedArtifact: Artifact = {
+      ...existingArtifact,
+      ...updates,
+    };
+
+    await this.setState({
+      ...this.state,
+      artifacts: {
+        ...this.state.artifacts,
+        [artifactId]: updatedArtifact,
+      },
+    });
+
+    return updatedArtifact;
+  }
+
+  @unstable_callable()
+  async deleteArtifact(artifactId: string) {
+    const existingArtifact = this.state.artifacts[artifactId];
+    if (!existingArtifact) {
+      throw new Error(`Artifact with ID ${artifactId} not found`);
+    }
+
+    const { [artifactId]: deletedArtifact, ...remainingArtifacts } =
+      this.state.artifacts;
+
+    await this.setState({
+      ...this.state,
+      artifacts: remainingArtifacts,
+    });
+
+    return deletedArtifact;
   }
 }

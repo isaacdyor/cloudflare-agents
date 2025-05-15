@@ -6,6 +6,7 @@ export interface Task {
   status: TaskStatus; // Current state of the task
   description: string; // Human-readable description
   parameters: Record<string, unknown>; // Task-specific parameters
+  artifactIds: string[];
   result?: unknown; // Output of the task
   error?: string; // Error message if failed
 }
@@ -25,7 +26,7 @@ export type TaskStatus = (typeof taskStatuses)[number];
 
 export interface Artifact {
   id: string;
-  name?: string; // optional, for easier lookup (e.g., "poem_1_draft")
+  name: string; // optional, for easier lookup (e.g., "poem_1_draft")
   type: string; // e.g., "poem", "code", "image", "file", etc.
   content: unknown; // raw content or structured output
 }
@@ -41,7 +42,7 @@ export interface WorkerAgentState {
   taskQueue: Task[];
   completedTasks: Task[];
 
-  artifacts: Artifact[];
+  artifacts: Record<string, Artifact>;
 }
 
 // Define the schema for next steps
