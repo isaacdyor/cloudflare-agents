@@ -26,6 +26,8 @@ export interface Task {
 
   result?: unknown; // Output of the task
   error?: string; // Error message if failed
+
+  plan?: TrackedTasks;
 }
 
 export const agentStatus = [
@@ -46,46 +48,29 @@ export interface WorkerAgentState {
   tasks: Record<string, Task>;
 }
 
-// Define the schema for next steps
-export const NextStepSchema = z.object({
-  // Type of the step to take
-  type: z.enum(taskTypes),
-
-  goal: z
-    .string()
-    .describe(
-      "The purpose of the step. This is what the next step will try to accomplish"
-    ),
-  parameters: z.record(z.any()).optional(),
-  // Rationale for this step
-  rationale: z
-    .string()
-    .describe(
-      "The rationale for the step. This is why the next step is necessary"
-    ),
+// The schema for the AI-generated task data
+export const AIGeneratedStepSchema = z.object({
+  title: z.string(),
+  description: z.string(),
 });
 
-// Define the schema for the completion decision
-export const CompletionDecisionSchema = z.object({
-  shouldComplete: z.boolean(),
-  reason: z.string(),
+export const AIGeneratedStepsSchema = z.array(AIGeneratedStepSchema);
+
+export const stepStatus = [
+  "pending",
+  "running",
+  "completed",
+  "failed",
+] as const;
+export type StepStatus = (typeof stepStatus)[number];
+
+// The schema for the internal task representation with status tracking
+export const TrackedTaskSchema = z.object({
+  title: z.string(),
+  description: z.string(),
+  status: z.enum(stepStatus).default("pending"),
 });
 
-// Define the schema for the thinking step output
-export const ThinkingStepOutputSchema = z.object({
-  // The actual reasoning/thought process
-  reasoning: z.string(),
-  nextStep: NextStepSchema,
-  completionDecision: CompletionDecisionSchema,
-});
+export const TrackedTasksSchema = z.array(TrackedTaskSchema);
 
-// Define the schema for action step output
-export const ActionStepOutputSchema = z.object({
-  // The execution result
-  result: z.string(),
-  nextStep: NextStepSchema,
-});
-
-// Type inference
-export type ThinkingStepOutput = z.infer<typeof ThinkingStepOutputSchema>;
-export type ActionStepOutput = z.infer<typeof ActionStepOutputSchema>;
+export type TrackedTasks = z.infer<typeof TrackedTasksSchema>;

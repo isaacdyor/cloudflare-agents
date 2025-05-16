@@ -1,14 +1,13 @@
 import { Agent, unstable_callable } from "agents";
 
 import {
-  ActionStepOutputSchema,
-  ThinkingStepOutputSchema,
+  AIGeneratedStepsSchema,
   type Task,
   type WorkerAgentState,
 } from "@/server/agents/agents.types";
 import { generateId, generateObject } from "ai";
-import { model } from "..";
 import type { Env } from "../index";
+import { model } from "..";
 
 export class WorkerAgent extends Agent<Env, WorkerAgentState> {
   async initialize(workerId: string, chatId: string, goal: string) {
@@ -49,13 +48,13 @@ export class WorkerAgent extends Agent<Env, WorkerAgentState> {
 
   @unstable_callable()
   async stop() {
-    if (!this.state.isRunning) return;
+    if (this.state.status !== "running") return;
 
     await this.setState({
       ...this.state,
-      isRunning: false,
+      status: "paused",
     });
-    return { status: "stopped" };
+    return { status: "paused" };
   }
 
   @unstable_callable()
@@ -63,36 +62,31 @@ export class WorkerAgent extends Agent<Env, WorkerAgentState> {
     // Create initial think task to analyze purpose and plan
     const initialTask: Task = {
       id: generateId(),
-      type: "think",
-      goal: "Initial analysis of agent purpose and planning",
-      parameters: {
-        rawUserInput: this.state.rawUserInput,
-        objective: this.state.objective,
-      },
+      stage: "plan",
+      status: "pending",
+      goal: "Write a blog post about the benefits of using AI agents",
     };
 
     await this.setState({
       ...this.state,
-      isRunning: false,
-      taskQueue: [initialTask],
-      completedTasks: [],
-      currentTask: undefined,
+      status: "idle",
+      mainTask: initialTask,
+      tasks: { [initialTask.id]: initialTask },
     });
   }
 
   @unstable_callable()
   async processNextTask() {
     console.log("Processing next task");
-    if (!this.state.isRunning) return;
-    console.log("State:", this.state);
+    if (this.state.status !== "running") return;
 
-    const task = this.state.taskQueue[0];
+    const task = await this.findNextTask();
     console.log("Task:", task);
 
     if (!task) {
       await this.setState({
         ...this.state,
-        isRunning: false,
+        status: "completed",
       });
       return;
     }
@@ -100,165 +94,116 @@ export class WorkerAgent extends Agent<Env, WorkerAgentState> {
     await this.processTask(task);
   }
 
-  private getBasePrompt(): string {
-    return `You are an AI agent working towards the following objective: "${this.state.objective}"
-
-Initial user input: "${this.state.rawUserInput}"
-
-Progress so far:
-${this.state.completedTasks.map((task, index) => `Step ${index + 1}: {Goal: ${task.goal}, Result: ${task.result}}`).join("\n")}
-
-
-
-Remember:
-1. If you need to create or modify any artifacts, specify this in your response
-2. List any artifact IDs that would be helpful for the next step
-3. Be specific and detailed in your actions and reasoning
-`;
-  }
-
   private async processTask(task: Task) {
-    try {
-      switch (task.type) {
-        case "think": {
-          console.log("Processing THINK task");
-          const thinkingPrompt = `${this.getBasePrompt()}
-
-Please analyze the current situation and determine the next best step. Your goal is to achieve the objective: "${task.goal}}"
-
-1. Review what has been accomplished so far
-2. Assess what remains to be done to achieve the objective
-3. Consider any potential obstacles or challenges
-4. Determine if the objective has been fully achieved
-
-Important Guidelines:
-- Choose "THINKING" type if you need to analyze, plan, or make decisions
-- Choose "ACTION" type if you need to perform any concrete task or operation
-- Be explicit about which artifacts would be helpful for the next step
-
-Based on this analysis, propose the single next best action to take. If the objective has been fully achieved, set the "complete" field to true.`;
-
-          const { object } = await generateObject({
-            model,
-            prompt: thinkingPrompt,
-            schema: ThinkingStepOutputSchema,
-          });
-
-          task.prompt = thinkingPrompt;
-
-          console.log("Thinking step output:", object);
-
-          if (object.completionDecision.shouldComplete) {
-            return this.completeTask(task, object.reasoning);
-          }
-
-          const nextTask = {
-            id: generateId(),
-            type: object.nextStep.type,
-            goal: object.nextStep.goal,
-          };
-          return this.updateTaskQueue(task, nextTask, object.reasoning);
-        }
-
-        case "action": {
-          console.log("Processing ACTION task");
-          const actionPrompt = `${this.getBasePrompt()}
-
-The goal of your current task is: "${task.goal}"
-
-Your task is to:
-1. Execute the action and provide a detailed result in the "result" field
-2. After completing the action, reflect on what needs to be done next
-3. Specify if any artifacts need to be created or updated
-4. List any artifact IDs that would be helpful for the next step
-
-Guidelines for artifact operations:
-- If you need to create a new artifact, specify its name, type, and content
-- If you need to update an existing artifact, specify its ID and the new content
-- If no artifact operations are needed, specify "NONE" as the operation type
-
-Important: The next step MUST be a "think" type task where you reflect on:
-- What was accomplished in this action
-- What new information or insights were gained
-- What should be the next focus based on the objective
-- Any potential challenges or considerations for the next steps
-
-Provide a clear and specific result of the action taken in the "result" field, and ensure the nextStep is always a "think" type task with a clear goal for reflection.`;
-
-          const { object } = await generateObject({
-            model,
-            prompt: actionPrompt,
-            schema: ActionStepOutputSchema,
-          });
-
-          task.prompt = actionPrompt;
-
-          console.log("Action step output:", object);
-
-          // Create next thinking task
-          const nextTask: Task = {
-            id: generateId(),
-            type: "think",
-            goal: object.nextStep.goal,
-            parameters: object.nextStep.parameters,
-          };
-
-          return this.updateTaskQueue(task, nextTask, object.result);
-        }
-      }
-    } catch (error: any) {
-      task.error = error.message;
-      return this.handleTaskError(task);
+    await this.updateTask({ ...task, status: "running" });
+    switch (task.stage) {
+      case "plan":
+        await this.processPlanTask(task);
+        break;
+      case "execute":
+        await this.processExecuteTask(task);
+        break;
+      case "reflect":
+        await this.processReflectTask(task);
+        break;
+      case "conclude":
+        await this.processConcludeTask(task);
+        break;
     }
   }
 
-  private async completeTask(task: Task, result: string) {
-    task.result = result;
-    await this.setState({
-      ...this.state,
-      isRunning: false,
-      taskQueue: this.state.taskQueue.slice(1),
-      completedTasks: [...this.state.completedTasks, task],
-    });
+  private async processPlanTask(task: Task) {
+    if (task.childTaskIds?.length === 0) {
+      const { object: plan } = await generateObject({
+        model,
+        prompt: `Generate a strategic plan to accomplish the following objective: ${task.goal}
+
+Create a clear, sequential list of tasks that need to be completed. Each task should:
+1. Include a brief, action-oriented title
+2. Contain a concise description (1-2 sentences) explaining WHAT needs to be accomplished
+
+Focus only on WHAT needs to be done, not HOW to do it. Break the objective into logical, manageable steps without specifying implementation details.`,
+        schema: AIGeneratedStepsSchema,
+      });
+
+      await this.updateTask({
+        ...task,
+        plan: plan.map((step) => ({
+          ...step,
+          status: "pending",
+        })),
+      });
+
+      const { object: firstStep } = await generateObject({
+        model,
+        prompt: `Generate a strategic plan to accomplish the following objective: ${task.goal}
+
+Create a clear, sequential list of tasks that need to be completed. Each task should:
+1. Include a brief, action-oriented title
+2. Contain a concise description (1-2 sentences) explaining WHAT needs to be accomplished
+
+Focus only on WHAT needs to be done, not HOW to do it. Break the objective into logical, manageable steps without specifying implementation details.`,
+        schema: AIGeneratedStepsSchema,
+      });
+    }
   }
 
-  private async updateTaskQueue(task: Task, nextTask: Task, result: string) {
-    task.result = result;
-    await this.setState({
-      ...this.state,
-      taskQueue: [...this.state.taskQueue.slice(1), nextTask],
-      completedTasks: [...this.state.completedTasks, task],
-    });
-    await this.scheduleNextExecution(1);
+  // this either executes or creates a new task
+  private async processExecuteTask(task: Task) {
+    console.log("Processing execute task");
   }
 
-  private async handleTaskError(task: Task) {
-    await this.setState({
-      ...this.state,
-      taskQueue: this.state.taskQueue.slice(1),
-      completedTasks: [...this.state.completedTasks, task],
-    });
-    await this.scheduleNextExecution(5);
+  private async processReflectTask(task: Task) {
+    console.log("Processing reflect task");
   }
 
-  private async scheduleNextExecution(seconds: number) {
-    await this.schedule(
-      new Date(Date.now() + seconds * 1000),
-      "processNextTask" as keyof this
-    );
+  private async processConcludeTask(task: Task) {
+    console.log("Processing conclude task");
+  }
+
+  private async findNextTask() {
+    const findPendingTask = (task: Task): Task | null => {
+      // If current task is pending, return it
+      if (task.status === "pending") {
+        return task;
+      }
+
+      // Check all children
+      const childTasks = (task.childTaskIds || [])
+        .map((id) => this.state.tasks[id])
+        .filter((child) => child !== undefined);
+
+      // Recursively check each child
+      for (const child of childTasks) {
+        const pendingTask = findPendingTask(child);
+        if (pendingTask) {
+          return pendingTask;
+        }
+      }
+
+      // No pending task found in this branch
+      return null;
+    };
+
+    // Start search from main task
+    return findPendingTask(this.state.mainTask);
+  }
+
+  private async updateTask(task: Task) {
+    await this.setState({
+      ...this.state,
+      tasks: { ...this.state.tasks, [task.id]: task },
+    });
   }
 
   @unstable_callable()
   async getWorkerInfo() {
     return {
       workerId: this.state.workerId,
-      rawUserInput: this.state.rawUserInput,
-      objective: this.state.objective,
+      goal: this.state.goal,
       chatId: this.state.chatId,
-      queueLength: this.state.taskQueue.length,
-      completedTasks: this.state.completedTasks,
-      taskQueue: this.state.taskQueue,
-      isRunning: this.state.isRunning,
+      tasks: this.state.tasks,
+      status: this.state.status,
     };
   }
 }
