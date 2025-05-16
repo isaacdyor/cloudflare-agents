@@ -11,45 +11,35 @@ import { model } from "..";
 import type { Env } from "../index";
 
 export class WorkerAgent extends Agent<Env, WorkerAgentState> {
-  async initialize(
-    workerId: string,
-    rawUserInput: string,
-    objective: string,
-    chatId: string
-  ) {
+  async initialize(workerId: string, chatId: string, goal: string) {
     // Create initial think task to analyze purpose and plan
     const initialTask: Task = {
       id: generateId(),
-      type: "think",
-      goal: "Initial analysis of agent purpose and planning",
-      parameters: { rawUserInput, objective },
+      stage: "plan",
+      status: "pending",
+      goal,
     };
 
     // Store the chat ID that created this worker along with its name, purpose, and the human-readable workerId
     await this.setState({
       workerId,
-      rawUserInput,
-      objective,
       chatId,
-      isRunning: false,
-      taskQueue: [initialTask],
-      completedTasks: [],
+      goal,
+      status: "idle",
+      mainTask: initialTask,
+      tasks: { [initialTask.id]: initialTask },
     });
-
-    return {
-      status: "initialized",
-    };
   }
 
   @unstable_callable()
   async start() {
-    if (this.state.isRunning) return;
+    if (this.state.status !== "idle" && this.state.status !== "paused") return;
 
     console.log("Starting worker agent");
 
     await this.setState({
       ...this.state,
-      isRunning: true,
+      status: "running",
     });
 
     // Start processing
